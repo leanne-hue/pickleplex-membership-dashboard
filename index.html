@@ -97,6 +97,9 @@ tr.cat-row.show{display:table-row}
 .fam-tbl th:first-child,.fam-tbl td:first-child{text-align:left}
 .fam-tbl th{color:var(--purple);font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;position:sticky;top:0;background:#fff;border-bottom:2px solid var(--purple-l)}
 .fam-tbl tr.fam-tot td{font-weight:800;border-top:2px solid var(--purple);background:var(--purple-l2);color:var(--purple-d)}
+.fam-tbl td .famv{font-weight:600;color:var(--ink)}
+.fam-tbl td .famd{font-size:9.5px;line-height:1.2;margin-top:1px;font-variant-numeric:tabular-nums}
+.fam-tbl tr.fam-tot td .famv{color:var(--purple-d)}
 </style>
 </head>
 <body>
@@ -348,52 +351,71 @@ function deltaCell(cur,prev){
   if(prev===0) pct=abs===0?'—':'new'; else pct=(abs/prev*100).toFixed(1)+'%';
   return {abs:(abs>0?'+':'')+abs.toLocaleString(),pct,cls,arrow};
 }
-const FAMILIES=['Pickleprime','Pickleflex','Picklesocial','Pickleplay','Free / Hourly'];
-const FAM_PAID=['Pickleprime','Pickleflex','Picklesocial','Pickleplay'];
-const FAM_COLORS={'Pickleprime':'#5b2a91','Pickleflex':'#ff6a13','Picklesocial':'#9b59b6','Pickleplay':'#f4a32b','Free / Hourly':'#8d86a0'};
+const FAMILIES=['Pickleprime','Pickleplex','Pickleflex','Picklesocial','Pickleplay','Free / Hourly'];
+const FAM_PAID=['Pickleprime','Pickleplex','Pickleflex','Picklesocial','Pickleplay'];
+const FAM_COLORS={'Pickleprime':'#5b2a91','Pickleplex':'#169c8e','Pickleflex':'#ff6a13','Picklesocial':'#9b59b6','Pickleplay':'#f4a32b','Free / Hourly':'#8d86a0'};
 function familyOf(g){
   if(g.indexOf('(Network)')>=0) return null;
   if(g.indexOf('Pickleprime Member')===0) return 'Pickleprime';
+  if(g.indexOf('Pickleplex Member')===0) return 'Pickleplex';
   if(g.indexOf('Pickleflex Member')===0) return 'Pickleflex';
   if(g==='Picklesocial Member') return 'Picklesocial';
   if(g.indexOf('Pickleplay Member')===0) return 'Pickleplay';
   if(g==='Hourly Play / Non-Member') return 'Free / Hourly';
   return null;
 }
+function famDeltaD(d){
+  if(d===null||d===undefined) return '<div class="famd flat">&mdash;</div>';
+  if(d===0) return '<div class="famd flat">&plusmn;0</div>';
+  var cls=d>0?'up':'down', ar=d>0?'▲':'▼';
+  return '<div class="famd '+cls+'">'+ar+' '+(d>0?'+':'')+d.toLocaleString()+'</div>';
+}
 function renderFamilies(){
   const week=state.week;
   const locs=[...state.locs].filter(l=>snapshotOnOrBefore(l,week));
   const rows=locs.map(loc=>{
-    const snap=snapshotOnOrBefore(loc,week); const vals={}; FAMILIES.forEach(f=>vals[f]=0);
+    const snap=snapshotOnOrBefore(loc,week);
+    const prevSnap=priorSnapshot(loc,snap.date);
+    const vals={},pvals={}; FAMILIES.forEach(f=>{vals[f]=0;pvals[f]=0;});
     for(const g in snap.categories){ const f=familyOf(g); if(f) vals[f]+=snap.categories[g][state.metric]||0; }
-    return {loc,vals,nyo:DATA.locations[loc].notYetOpen};
+    if(prevSnap) for(const g in prevSnap.categories){ const f=familyOf(g); if(f) pvals[f]+=prevSnap.categories[g][state.metric]||0; }
+    return {loc,vals,pvals:prevSnap?pvals:null,nyo:DATA.locations[loc].notYetOpen};
   });
   rows.sort((a,b)=> FAM_PAID.reduce((s,f)=>s+b.vals[f],0) - FAM_PAID.reduce((s,f)=>s+a.vals[f],0));
   const labels=rows.map(r=>r.loc);
-  const ds=FAM_PAID.map(f=>({label:f,data:rows.map(r=>r.vals[f]),backgroundColor:FAM_COLORS[f],borderRadius:3,borderWidth:0}));
+  const ds=FAM_PAID.map(f=>({label:f,data:rows.map(r=>r.vals[f]),backgroundColor:FAM_COLORS[f],borderRadius:3,borderWidth:0,
+    _prev:rows.map(r=>r.pvals?r.pvals[f]:null)}));
   if(famChart) famChart.destroy();
   famChart=new Chart(document.getElementById('famChart'),{type:'bar',
     data:{labels,datasets:ds},
     options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',
-      plugins:{legend:{position:'top',labels:{color:'#17131f',font:{size:11},boxWidth:12}}},
+      plugins:{legend:{position:'top',labels:{color:'#17131f',font:{size:11},boxWidth:12}},
+        tooltip:{callbacks:{afterLabel:(it)=>{const pv=it.dataset._prev[it.dataIndex]; if(pv==null) return 'no prior week'; const d=it.parsed.x-pv; return (d>0?'▲ +':d<0?'▼ ':'± ')+d+' vs prior wk';}}}},
       scales:{x:{stacked:true,ticks:{color:'#6c6678'},grid:{color:'rgba(91,42,145,.08)'},beginAtZero:true},
               y:{stacked:true,ticks:{color:'#6c6678',font:{size:11}},grid:{display:false}}}}
   });
   const colMax={}; FAMILIES.forEach(f=>colMax[f]=Math.max(1,...rows.map(r=>r.vals[f])));
+  const totals={},dtot={}; FAMILIES.forEach(f=>{totals[f]=0;dtot[f]=0;}); let anyPrev=false;
   let h='<table class="fam-tbl"><thead><tr><th>Location</th>'+FAMILIES.map(f=>'<th>'+f+'</th>').join('')+'<th>Total</th></tr></thead><tbody>';
-  const totals={}; FAMILIES.forEach(f=>totals[f]=0);
   for(const r of rows){
-    let rt=0; h+='<tr><td>'+r.loc+(r.nyo?' <span class="badge nyo">NYO</span>':'')+'</td>';
-    for(const f of FAMILIES){ const v=r.vals[f]; rt+=v; totals[f]+=v;
+    const hasPrev=!!r.pvals; if(hasPrev) anyPrev=true;
+    let rt=0, rd=0;
+    h+='<tr><td>'+r.loc+(r.nyo?' <span class="badge nyo">NYO</span>':'')+'</td>';
+    for(const f of FAMILIES){
+      const v=r.vals[f]; rt+=v; totals[f]+=v;
+      let cellD=null;
+      if(hasPrev){ const dd=v-r.pvals[f]; cellD=dd; rd+=dd; dtot[f]+=dd; }
       const a=v>0?(0.06+0.5*v/colMax[f]).toFixed(3):0;
-      h+='<td style="background:rgba(91,42,145,'+a+')">'+v.toLocaleString()+'</td>'; }
-    h+='<td><b>'+rt.toLocaleString()+'</b></td></tr>';
+      h+='<td style="background:rgba(91,42,145,'+a+')"><div class="famv">'+v.toLocaleString()+'</div>'+famDeltaD(cellD)+'</td>';
+    }
+    h+='<td><div class="famv">'+rt.toLocaleString()+'</div>'+famDeltaD(hasPrev?rd:null)+'</td></tr>';
   }
-  let gt=0; h+='<tr class="fam-tot"><td>All locations</td>';
-  for(const f of FAMILIES){ h+='<td>'+totals[f].toLocaleString()+'</td>'; gt+=totals[f]; }
-  h+='<td>'+gt.toLocaleString()+'</td></tr></tbody></table>';
+  let gt=0, gd=0;
+  h+='<tr class="fam-tot"><td>All locations</td>';
+  for(const f of FAMILIES){ h+='<td><div class="famv">'+totals[f].toLocaleString()+'</div>'+famDeltaD(anyPrev?dtot[f]:null)+'</td>'; gt+=totals[f]; gd+=dtot[f]; }
+  h+='<td><div class="famv">'+gt.toLocaleString()+'</div>'+famDeltaD(anyPrev?gd:null)+'</td></tr></tbody></table>';
   document.getElementById('famTableWrap').innerHTML=h;
-  document.getElementById('famNote').textContent='Membership family '+state.metric+' counts'+(week?' as of '+prettyDate(week):'')+' — “(Network)” memberships excluded; this view ignores the membership-type filter above.';
+  document.getElementById('famNote').textContent='Membership family '+state.metric+' counts with week-over-week change'+(week?' as of '+prettyDate(week):'')+' — each cell shows the count and Δ vs the prior week; “(Network)” excluded; ignores the membership-type filter above.';
 }
 let trendChart,locChart,famChart;
 function render(){
