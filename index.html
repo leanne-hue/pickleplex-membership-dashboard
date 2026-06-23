@@ -89,6 +89,14 @@ tr.cat-row.show{display:table-row}
 .section-title{font-size:12.5px;color:var(--muted);margin:6px 0 12px;font-weight:600}
 .warn{background:var(--orange-l);border:1px solid var(--orange);color:var(--orange-d);
   border-radius:10px;padding:10px 14px;font-size:12.5px;margin-bottom:16px;font-weight:600}
+.fam-wrap{display:grid;grid-template-columns:1.05fr 1fr;gap:18px}
+@media(max-width:980px){.fam-wrap{grid-template-columns:1fr}}
+.fam-table{max-height:430px;overflow:auto;border:1px solid var(--line);border-radius:9px}
+.fam-tbl{width:100%;border-collapse:collapse;font-size:12px}
+.fam-tbl th,.fam-tbl td{padding:5px 9px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap;font-variant-numeric:tabular-nums}
+.fam-tbl th:first-child,.fam-tbl td:first-child{text-align:left}
+.fam-tbl th{color:var(--purple);font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;position:sticky;top:0;background:#fff;border-bottom:2px solid var(--purple-l)}
+.fam-tbl tr.fam-tot td{font-weight:800;border-top:2px solid var(--purple);background:var(--purple-l2);color:var(--purple-d)}
 </style>
 </head>
 <body>
@@ -151,6 +159,18 @@ tr.cat-row.show{display:table-row}
       <h2>Latest by location</h2>
       <div class="chart-box"><canvas id="locChart"></canvas></div>
       <div class="legend-note">Green = grew vs prior week, red = shrank, orange = Not Yet Open (pre-opening), purple = no prior week.</div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:20px">
+    <h2>Membership families by location</h2>
+    <div class="section-title" id="famNote"></div>
+    <div class="fam-wrap">
+      <div>
+        <div class="chart-box" style="height:430px"><canvas id="famChart"></canvas></div>
+        <div class="legend-note">Stacked bars show the four paid families. <b>Free / Hourly</b> is excluded from the chart (its scale is far larger) &mdash; see the table for those figures. &ldquo;(Network)&rdquo; memberships are excluded from every family.</div>
+      </div>
+      <div class="fam-table" id="famTableWrap"></div>
     </div>
   </div>
 
@@ -328,7 +348,54 @@ function deltaCell(cur,prev){
   if(prev===0) pct=abs===0?'—':'new'; else pct=(abs/prev*100).toFixed(1)+'%';
   return {abs:(abs>0?'+':'')+abs.toLocaleString(),pct,cls,arrow};
 }
-let trendChart,locChart;
+const FAMILIES=['Pickleprime','Pickleflex','Picklesocial','Pickleplay','Free / Hourly'];
+const FAM_PAID=['Pickleprime','Pickleflex','Picklesocial','Pickleplay'];
+const FAM_COLORS={'Pickleprime':'#5b2a91','Pickleflex':'#ff6a13','Picklesocial':'#9b59b6','Pickleplay':'#f4a32b','Free / Hourly':'#8d86a0'};
+function familyOf(g){
+  if(g.indexOf('(Network)')>=0) return null;
+  if(g.indexOf('Pickleprime Member')===0) return 'Pickleprime';
+  if(g.indexOf('Pickleflex Member')===0) return 'Pickleflex';
+  if(g==='Picklesocial Member') return 'Picklesocial';
+  if(g.indexOf('Pickleplay Member')===0) return 'Pickleplay';
+  if(g==='Hourly Play / Non-Member') return 'Free / Hourly';
+  return null;
+}
+function renderFamilies(){
+  const week=state.week;
+  const locs=[...state.locs].filter(l=>snapshotOnOrBefore(l,week));
+  const rows=locs.map(loc=>{
+    const snap=snapshotOnOrBefore(loc,week); const vals={}; FAMILIES.forEach(f=>vals[f]=0);
+    for(const g in snap.categories){ const f=familyOf(g); if(f) vals[f]+=snap.categories[g][state.metric]||0; }
+    return {loc,vals,nyo:DATA.locations[loc].notYetOpen};
+  });
+  rows.sort((a,b)=> FAM_PAID.reduce((s,f)=>s+b.vals[f],0) - FAM_PAID.reduce((s,f)=>s+a.vals[f],0));
+  const labels=rows.map(r=>r.loc);
+  const ds=FAM_PAID.map(f=>({label:f,data:rows.map(r=>r.vals[f]),backgroundColor:FAM_COLORS[f],borderRadius:3,borderWidth:0}));
+  if(famChart) famChart.destroy();
+  famChart=new Chart(document.getElementById('famChart'),{type:'bar',
+    data:{labels,datasets:ds},
+    options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',
+      plugins:{legend:{position:'top',labels:{color:'#17131f',font:{size:11},boxWidth:12}}},
+      scales:{x:{stacked:true,ticks:{color:'#6c6678'},grid:{color:'rgba(91,42,145,.08)'},beginAtZero:true},
+              y:{stacked:true,ticks:{color:'#6c6678',font:{size:11}},grid:{display:false}}}}
+  });
+  const colMax={}; FAMILIES.forEach(f=>colMax[f]=Math.max(1,...rows.map(r=>r.vals[f])));
+  let h='<table class="fam-tbl"><thead><tr><th>Location</th>'+FAMILIES.map(f=>'<th>'+f+'</th>').join('')+'<th>Total</th></tr></thead><tbody>';
+  const totals={}; FAMILIES.forEach(f=>totals[f]=0);
+  for(const r of rows){
+    let rt=0; h+='<tr><td>'+r.loc+(r.nyo?' <span class="badge nyo">NYO</span>':'')+'</td>';
+    for(const f of FAMILIES){ const v=r.vals[f]; rt+=v; totals[f]+=v;
+      const a=v>0?(0.06+0.5*v/colMax[f]).toFixed(3):0;
+      h+='<td style="background:rgba(91,42,145,'+a+')">'+v.toLocaleString()+'</td>'; }
+    h+='<td><b>'+rt.toLocaleString()+'</b></td></tr>';
+  }
+  let gt=0; h+='<tr class="fam-tot"><td>All locations</td>';
+  for(const f of FAMILIES){ h+='<td>'+totals[f].toLocaleString()+'</td>'; gt+=totals[f]; }
+  h+='<td>'+gt.toLocaleString()+'</td></tr></tbody></table>';
+  document.getElementById('famTableWrap').innerHTML=h;
+  document.getElementById('famNote').textContent='Membership family '+state.metric+' counts'+(week?' as of '+prettyDate(week):'')+' — “(Network)” memberships excluded; this view ignores the membership-type filter above.';
+}
+let trendChart,locChart,famChart;
 function render(){
   document.getElementById('metricName').textContent=state.metric;
   document.getElementById('curHead').textContent=state.metric;
@@ -338,7 +405,7 @@ function render(){
     document.getElementById('warnBox').innerHTML='<div class="warn">⚠ '+DATA.unmapped.length+' new membership category name(s) from the latest pull are not in the grouping file and are shown under “Unmapped – Review”: '+DATA.unmapped.map(x=>'“'+x+'”').join(', ')+'. Add them to groups.json to fold them into a standard group.</div>';
   }
   const rows=rowsForView();
-  renderKPIs(rows); renderTable(rows); renderTrend(); renderLocChart(rows);
+  renderKPIs(rows); renderTable(rows); renderTrend(); renderLocChart(rows); renderFamilies();
   const tnote=state.types===null?'all membership types':[...state.types].length+' membership type(s)';
   document.getElementById('scopeNote').textContent='Showing '+state.metric+' for '+state.locs.size+' location(s), '+tnote+(state.week?' · snapshot '+prettyDate(state.week)+(state.cmp==='prev'?' vs prior week':''):'');
 }
