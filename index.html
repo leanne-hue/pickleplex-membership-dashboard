@@ -161,7 +161,7 @@ tr.cat-row.show{display:table-row}
     <div class="card">
       <h2>Latest by location</h2>
       <div class="chart-box"><canvas id="locChart"></canvas></div>
-      <div class="legend-note">Green = grew vs prior week, red = shrank, orange = Not Yet Open (pre-opening), purple = no prior week.</div>
+      <div class="legend-note">Green = grew vs the comparison week, red = shrank, orange = Not Yet Open (pre-opening), purple = no comparison week.</div>
     </div>
   </div>
 
@@ -185,7 +185,7 @@ tr.cat-row.show{display:table-row}
         <thead><tr>
           <th data-sort="name">Location / Membership group</th>
           <th data-sort="cur" id="curHead">Active</th>
-          <th data-sort="prev">Prior</th>
+          <th data-sort="prev" id="prevHead">Prior</th>
           <th data-sort="abs">&Delta;</th>
           <th data-sort="pct">&Delta; %</th>
           <th data-sort="trend"></th>
@@ -231,6 +231,27 @@ function priorSnapshot(loc,date){
   const wks=DATA.locations[loc].weeks; let prev=null,cur=null;
   for(const w of wks){ if(w.date<=date){ prev=cur; cur=w; } else break; }
   return prev;
+}
+function compareSnapshot(loc,snap){
+  if(!snap||state.cmp==='none') return null;
+  if(state.cmp==='prev') return priorSnapshot(loc,snap.date);
+  const c=snapshotOnOrBefore(loc,state.cmp);
+  if(!c||c.date===snap.date) return null;
+  return c;
+}
+function cmpShort(){ return state.cmp==='prev'?'prior wk':(state.cmp==='none'?'':'wk of '+prettyDate(state.cmp)); }
+function cmpLong(){ return state.cmp==='prev'?'prior week':(state.cmp==='none'?'':'week of '+prettyDate(state.cmp)); }
+function buildCmpSel(){
+  const sel=document.getElementById('cmpSel'); const dates=allDates(); const cur=state.cmp;
+  sel.innerHTML='';
+  const o1=document.createElement('option'); o1.value='prev'; o1.textContent='Prior week'; sel.appendChild(o1);
+  const o2=document.createElement('option'); o2.value='none'; o2.textContent='No comparison'; sel.appendChild(o2);
+  if(dates.length){
+    const og=document.createElement('optgroup'); og.label='Compare to a specific week';
+    for(const d of [...dates].reverse()){ const o=document.createElement('option'); o.value=d; o.textContent='Week of '+prettyDate(d); og.appendChild(o); }
+    sel.appendChild(og);
+  }
+  if(cur==='prev'||cur==='none'||dates.includes(cur)){ sel.value=cur; } else { state.cmp='prev'; sel.value='prev'; }
 }
 function unionTypesForLocs(locs){
   const s=new Set();
@@ -306,7 +327,7 @@ function updateTypeBtn(){
   const sel=[...state.types].filter(c=>opts.includes(c));
   b.textContent = sel.length===opts.length?'All types':(sel.length===0?'No types':sel.length+' of '+opts.length+' types');
 }
-function onLocChange(){ buildTypePanel(); updateLocBtn(); updateTypeBtn(); buildWeekSel(); render(); }
+function onLocChange(){ buildTypePanel(); updateLocBtn(); updateTypeBtn(); buildWeekSel(); buildCmpSel(); render(); }
 function buildWeekSel(){
   const sel=document.getElementById('weekSel'); const dates=allDates(); sel.innerHTML='';
   if(dates.length===0){ const o=document.createElement('option'); o.textContent='—'; sel.appendChild(o); state.week=null; return; }
@@ -325,7 +346,7 @@ function rowsForView(){
     const L=DATA.locations[loc]; const isNYO=!!L.notYetOpen;
     const snap=state.week?snapshotOnOrBefore(loc,state.week):null;
     if(!snap){ out.push({loc,notYetOpen:isNYO,noData:true,hasHistory:L.hasHistory}); continue; }
-    const prevSnap=state.cmp==='prev'?priorSnapshot(loc,snap.date):null;
+    const prevSnap=compareSnapshot(loc,snap);
     let cur=0,prev=0; const cats=[];
     const names=new Set([...Object.keys(snap.categories)]);
     if(prevSnap) for(const c in prevSnap.categories) names.add(c);
@@ -375,7 +396,7 @@ function renderFamilies(){
   const locs=[...state.locs].filter(l=>snapshotOnOrBefore(l,week));
   const rows=locs.map(loc=>{
     const snap=snapshotOnOrBefore(loc,week);
-    const prevSnap=priorSnapshot(loc,snap.date);
+    const prevSnap=compareSnapshot(loc,snap);
     const vals={},pvals={}; FAMILIES.forEach(f=>{vals[f]=0;pvals[f]=0;});
     for(const g in snap.categories){ const f=familyOf(g); if(f) vals[f]+=snap.categories[g][state.metric]||0; }
     if(prevSnap) for(const g in prevSnap.categories){ const f=familyOf(g); if(f) pvals[f]+=prevSnap.categories[g][state.metric]||0; }
@@ -390,7 +411,7 @@ function renderFamilies(){
     data:{labels,datasets:ds},
     options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',
       plugins:{legend:{position:'top',labels:{color:'#17131f',font:{size:11},boxWidth:12}},
-        tooltip:{callbacks:{afterLabel:(it)=>{const pv=it.dataset._prev[it.dataIndex]; if(pv==null) return 'no prior week'; const d=it.parsed.x-pv; return (d>0?'▲ +':d<0?'▼ ':'± ')+d+' vs prior wk';}}}},
+        tooltip:{callbacks:{afterLabel:(it)=>{const pv=it.dataset._prev[it.dataIndex]; if(pv==null) return 'no prior week'; const d=it.parsed.x-pv; return (d>0?'▲ +':d<0?'▼ ':'± ')+d+' vs '+cmpShort();}}}},
       scales:{x:{stacked:true,ticks:{color:'#6c6678'},grid:{color:'rgba(91,42,145,.08)'},beginAtZero:true},
               y:{stacked:true,ticks:{color:'#6c6678',font:{size:11}},grid:{display:false}}}}
   });
@@ -415,12 +436,13 @@ function renderFamilies(){
   for(const f of FAMILIES){ h+='<td><div class="famv">'+totals[f].toLocaleString()+'</div>'+famDeltaD(anyPrev?dtot[f]:null)+'</td>'; gt+=totals[f]; gd+=dtot[f]; }
   h+='<td><div class="famv">'+gt.toLocaleString()+'</div>'+famDeltaD(anyPrev?gd:null)+'</td></tr></tbody></table>';
   document.getElementById('famTableWrap').innerHTML=h;
-  document.getElementById('famNote').textContent='Membership family '+state.metric+' counts with week-over-week change'+(week?' as of '+prettyDate(week):'')+' — each cell shows the count and Δ vs the prior week; “(Network)” excluded; ignores the membership-type filter above.';
+  document.getElementById('famNote').textContent='Membership family '+state.metric+' counts'+(week?' as of '+prettyDate(week):'')+(state.cmp==='none'?' (no comparison)':' with Δ vs '+cmpLong())+' — each cell shows the count and change; “(Network)” excluded; ignores the membership-type filter above.';
 }
 let trendChart,locChart,famChart;
 function render(){
   document.getElementById('metricName').textContent=state.metric;
   document.getElementById('curHead').textContent=state.metric;
+  document.getElementById('prevHead').textContent=state.cmp==='prev'?'Prior wk':(state.cmp==='none'?'Prior':'Wk of '+prettyDate(state.cmp));
   document.getElementById('latestDate').textContent=DATA.latest?prettyDate(DATA.latest):'—';
   document.getElementById('locCount').innerHTML=LOCS.length+' locations &middot; '+isOpenList().length+' open &middot; '+(LOCS.length-isOpenList().length)+' not yet open';
   if(DATA.unmapped && DATA.unmapped.length){
@@ -429,7 +451,7 @@ function render(){
   const rows=rowsForView();
   renderKPIs(rows); renderTable(rows); renderTrend(); renderLocChart(rows); renderFamilies();
   const tnote=state.types===null?'all membership types':[...state.types].length+' membership type(s)';
-  document.getElementById('scopeNote').textContent='Showing '+state.metric+' for '+state.locs.size+' location(s), '+tnote+(state.week?' · snapshot '+prettyDate(state.week)+(state.cmp==='prev'?' vs prior week':''):'');
+  document.getElementById('scopeNote').textContent='Showing '+state.metric+' for '+state.locs.size+' location(s), '+tnote+(state.week?' · snapshot '+prettyDate(state.week)+(state.cmp==='none'?'':' vs '+cmpLong()):'');
 }
 function renderKPIs(rows){
   const open=rows.filter(r=>r.cur!=null);
@@ -442,10 +464,10 @@ function renderKPIs(rows){
   const shrank=open.filter(r=>r.prev!=null&&r.cur<r.prev).length;
   const K=document.getElementById('kpis'); K.innerHTML='';
   const cards=[
-    {a:1,k:'Total '+state.metric,v:fmt(totCur),d:'<span class="'+d.cls+'">'+d.arrow+' '+d.abs+' ('+d.pct+')</span> vs prior week'},
+    {a:1,k:'Total '+state.metric,v:fmt(totCur),d:'<span class="'+d.cls+'">'+d.arrow+' '+d.abs+' ('+d.pct+')</span> '+(state.cmp==='none'?'(no comparison)':'vs '+cmpLong())},
     {k:'Locations in view',v:open.length,d:nyo+' not yet open'+(rows.some(r=>r.noData)?' · '+rows.filter(r=>r.noData).length+' no data':'')},
-    {k:'Locations grew',v:grew,d:'week over week'},
-    {k:'Locations shrank',v:shrank,d:'week over week'}
+    {k:'Locations grew',v:grew,d:state.cmp==='none'?'(no comparison)':'vs '+cmpLong()},
+    {k:'Locations shrank',v:shrank,d:state.cmp==='none'?'(no comparison)':'vs '+cmpLong()}
   ];
   for(const c of cards){
     const el=document.createElement('div'); el.className='kpi'+(c.a?' accent':'');
@@ -522,7 +544,7 @@ function renderLocChart(rows){
     options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',
       plugins:{legend:{display:false},tooltip:{callbacks:{afterLabel:(it)=>{
         const r=open[it.dataIndex]; if(r.prev==null)return r.notYetOpen?'Not Yet Open (pre-opening)':''; const dd=r.cur-r.prev;
-        return (dd>0?'▲ +':dd<0?'▼ ':'— ')+dd+' vs prior wk';}}}},
+        return (dd>0?'▲ +':dd<0?'▼ ':'— ')+dd+' vs '+cmpShort();}}}},
       scales:{x:{ticks:{color:'#6c6678'},grid:{color:'rgba(91,42,145,.08)'},beginAtZero:true},
               y:{ticks:{color:'#6c6678',font:{size:11}},grid:{display:false}}}}
   });
@@ -545,7 +567,7 @@ document.querySelectorAll('#mainTable th').forEach(th=>{
   th.onclick=()=>{ const k=th.dataset.sort; if(!k)return;
     if(state.sort.key===k) state.sort.dir*=-1; else state.sort={key:k,dir:-1}; renderTable(rowsForView()); };
 });
-buildLocPanel(); buildTypePanel(); updateLocBtn(); updateTypeBtn(); buildWeekSel(); render();
+buildLocPanel(); buildTypePanel(); updateLocBtn(); updateTypeBtn(); buildWeekSel(); buildCmpSel(); render();
 </script>
 </body>
 </html>
