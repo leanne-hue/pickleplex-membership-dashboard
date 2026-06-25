@@ -171,7 +171,7 @@ tr.cat-row.show{display:table-row}
     <div class="fam-wrap">
       <div>
         <div class="chart-box" style="height:430px"><canvas id="famChart"></canvas></div>
-        <div class="legend-note">Stacked bars show the four paid families. <b>Free / Hourly</b> is excluded from the chart (its scale is far larger) &mdash; see the table for those figures. &ldquo;(Network)&rdquo; memberships are excluded from every family.</div>
+        <div class="legend-note">Stacked bars show the five paid families. <b>Pickleprime</b> includes Pickleprime Pass. For <b>Promenade &amp; Windsor</b>, Pickleplay is merged into Pickleplex. <b>Free / Hourly</b> is excluded from the chart (its scale is far larger) &mdash; see the table for those figures. &ldquo;(Network)&rdquo; memberships are excluded from every family.</div>
       </div>
       <div class="fam-table" id="famTableWrap"></div>
     </div>
@@ -375,9 +375,11 @@ function deltaCell(cur,prev){
 const FAMILIES=['Pickleprime','Pickleplex','Pickleflex','Picklesocial','Pickleplay','Free / Hourly'];
 const FAM_PAID=['Pickleprime','Pickleplex','Pickleflex','Picklesocial','Pickleplay'];
 const FAM_COLORS={'Pickleprime':'#5b2a91','Pickleplex':'#169c8e','Pickleflex':'#ff6a13','Picklesocial':'#9b59b6','Pickleplay':'#f4a32b','Free / Hourly':'#8d86a0'};
+const MERGE_PLAY_PLEX=new Set(['Promenade','Windsor']);
 function familyOf(g){
   if(g.indexOf('(Network)')>=0) return null;
   if(g.indexOf('Pickleprime Member')===0) return 'Pickleprime';
+  if(g==='Pickleprime Pass') return 'Pickleprime';
   if(g.indexOf('Pickleplex Member')===0) return 'Pickleplex';
   if(g.indexOf('Pickleflex Member')===0) return 'Pickleflex';
   if(g==='Picklesocial Member') return 'Picklesocial';
@@ -400,7 +402,13 @@ function renderFamilies(){
     const vals={},pvals={}; FAMILIES.forEach(f=>{vals[f]=0;pvals[f]=0;});
     for(const g in snap.categories){ const f=familyOf(g); if(f) vals[f]+=snap.categories[g][state.metric]||0; }
     if(prevSnap) for(const g in prevSnap.categories){ const f=familyOf(g); if(f) pvals[f]+=prevSnap.categories[g][state.metric]||0; }
-    return {loc,vals,pvals:prevSnap?pvals:null,nyo:DATA.locations[loc].notYetOpen};
+    let merged=false;
+    if(MERGE_PLAY_PLEX.has(loc)){
+      vals['Pickleplex']+=vals['Pickleplay']; vals['Pickleplay']=0;
+      if(prevSnap){ pvals['Pickleplex']+=pvals['Pickleplay']; pvals['Pickleplay']=0; }
+      merged=true;
+    }
+    return {loc,vals,pvals:prevSnap?pvals:null,nyo:DATA.locations[loc].notYetOpen,merged};
   });
   rows.sort((a,b)=> FAM_PAID.reduce((s,f)=>s+b.vals[f],0) - FAM_PAID.reduce((s,f)=>s+a.vals[f],0));
   const labels=rows.map(r=>r.loc);
@@ -426,6 +434,7 @@ function renderFamilies(){
       const v=r.vals[f]; rt+=v; totals[f]+=v;
       let cellD=null;
       if(hasPrev){ const dd=v-r.pvals[f]; cellD=dd; rd+=dd; dtot[f]+=dd; }
+      if(r.merged && f==='Pickleplay'){ h+='<td class="muted" style="font-size:10px">in Pickleplex</td>'; continue; }
       const a=v>0?(0.06+0.5*v/colMax[f]).toFixed(3):0;
       h+='<td style="background:rgba(91,42,145,'+a+')"><div class="famv">'+v.toLocaleString()+'</div>'+famDeltaD(cellD)+'</td>';
     }
