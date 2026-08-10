@@ -53,9 +53,11 @@ select:hover,.dd-btn:hover{border-color:var(--purple)}
 .kpi{background:#fff;border:1.5px solid var(--line);border-radius:13px;padding:15px 17px;position:relative;overflow:hidden}
 .kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--purple)}
 .kpi.accent::before{background:var(--orange)}
+.kpi.warn::before{background:var(--down)}
 .kpi .k{font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:var(--muted);font-weight:700}
 .kpi .v{font-size:28px;font-weight:800;margin-top:6px;color:var(--purple-d)}
 .kpi.accent .v{color:var(--orange-d)}
+.kpi.warn .v{color:var(--down)}
 .kpi .d{font-size:12.5px;margin-top:4px;color:var(--muted)}
 .grid2{display:grid;grid-template-columns:1.45fr 1fr;gap:18px;margin-bottom:20px}
 @media(max-width:980px){.grid2{grid-template-columns:1fr}}
@@ -200,6 +202,7 @@ tr.cat-row.show{display:table-row}
           <th data-sort="prev" id="prevHead">Prior</th>
           <th data-sort="abs">&Delta;</th>
           <th data-sort="pct">&Delta; %</th>
+          <th data-sort="sus">Suspended</th>
           <th data-sort="trend"></th>
         </tr></thead>
         <tbody id="mainBody"></tbody>
@@ -359,7 +362,7 @@ function rowsForView(){
     const snap=state.week?snapshotOnOrBefore(loc,state.week):null;
     if(!snap){ out.push({loc,notYetOpen:isNYO,noData:true,hasHistory:L.hasHistory}); continue; }
     const prevSnap=compareSnapshot(loc,snap);
-    let cur=0,prev=0; const cats=[];
+    let cur=0,prev=0,susCur=0,susPrev=0; const cats=[];
     const names=new Set([...Object.keys(snap.categories)]);
     if(prevSnap) for(const c in prevSnap.categories) names.add(c);
     for(const c of names){
@@ -367,11 +370,14 @@ function rowsForView(){
       const cv=snap.categories[c]?snap.categories[c][state.metric]||0:0;
       const pv=prevSnap&&prevSnap.categories[c]?prevSnap.categories[c][state.metric]||0:0;
       if(snap.categories[c]===undefined && pv===0) continue;
-      cats.push({name:c,cur:cv,prev:prevSnap?pv:null});
+      const scv=snap.categories[c]?snap.categories[c]['Suspended']||0:0;
+      const spv=prevSnap&&prevSnap.categories[c]?prevSnap.categories[c]['Suspended']||0:0;
+      cats.push({name:c,cur:cv,prev:prevSnap?pv:null,susCur:scv,susPrev:prevSnap?spv:null});
       cur+=cv; if(prevSnap) prev+=pv;
+      susCur+=scv; if(prevSnap) susPrev+=spv;
     }
     cats.sort((a,b)=>b.cur-a.cur);
-    out.push({loc,notYetOpen:isNYO,cur,prev:prevSnap?prev:null,cats,hasHistory:true});
+    out.push({loc,notYetOpen:isNYO,cur,prev:prevSnap?prev:null,susCur,susPrev:prevSnap?susPrev:null,cats,hasHistory:true});
   }
   return out;
 }
@@ -412,15 +418,16 @@ function renderFamilies(){
     const snap=snapshotOnOrBefore(loc,week);
     const prevSnap=compareSnapshot(loc,snap);
     const vals={},pvals={}; FAMILIES.forEach(f=>{vals[f]=0;pvals[f]=0;});
-    for(const g in snap.categories){ const f=familyOf(g); if(f) vals[f]+=snap.categories[g][state.metric]||0; }
-    if(prevSnap) for(const g in prevSnap.categories){ const f=familyOf(g); if(f) pvals[f]+=prevSnap.categories[g][state.metric]||0; }
+    let susTotal=0, susPrevTotal=0;
+    for(const g in snap.categories){ const f=familyOf(g); if(f){ vals[f]+=snap.categories[g][state.metric]||0; susTotal+=snap.categories[g]['Suspended']||0; } }
+    if(prevSnap) for(const g in prevSnap.categories){ const f=familyOf(g); if(f){ pvals[f]+=prevSnap.categories[g][state.metric]||0; susPrevTotal+=prevSnap.categories[g]['Suspended']||0; } }
     let merged=false;
     if(MERGE_PLAY_PLEX.has(loc)){
       vals['Pickleplex']+=vals['Pickleplay']; vals['Pickleplay']=0;
       if(prevSnap){ pvals['Pickleplex']+=pvals['Pickleplay']; pvals['Pickleplay']=0; }
       merged=true;
     }
-    return {loc,vals,pvals:prevSnap?pvals:null,nyo:DATA.locations[loc].notYetOpen,merged};
+    return {loc,vals,pvals:prevSnap?pvals:null,nyo:DATA.locations[loc].notYetOpen,merged,susTotal,susPrevTotal:prevSnap?susPrevTotal:null};
   });
   rows.sort((a,b)=> FAM_PAID.reduce((s,f)=>s+b.vals[f],0) - FAM_PAID.reduce((s,f)=>s+a.vals[f],0));
   const labels=rows.map(r=>r.loc);
@@ -437,7 +444,8 @@ function renderFamilies(){
   });
   const colMax={}; FAMILIES.forEach(f=>colMax[f]=Math.max(1,...rows.map(r=>r.vals[f])));
   const totals={},dtot={}; FAMILIES.forEach(f=>{totals[f]=0;dtot[f]=0;}); let anyPrev=false;
-  let h='<table class="fam-tbl"><thead><tr><th>Location</th>'+FAMILIES.map(f=>'<th>'+f+'</th>').join('')+'<th>Total</th></tr></thead><tbody>';
+  let susGrandTotal=0, susGrandDelta=0, anySusPrev=false;
+  let h='<table class="fam-tbl"><thead><tr><th>Location</th>'+FAMILIES.map(f=>'<th>'+f+'</th>').join('')+'<th>Suspended</th><th>Total</th></tr></thead><tbody>';
   for(const r of rows){
     const hasPrev=!!r.pvals; if(hasPrev) anyPrev=true;
     let rt=0, rd=0;
@@ -450,14 +458,19 @@ function renderFamilies(){
       const a=v>0?(0.06+0.5*v/colMax[f]).toFixed(3):0;
       h+='<td style="background:rgba(91,42,145,'+a+')"><div class="famv">'+v.toLocaleString()+'</div>'+famDeltaD(cellD)+'</td>';
     }
+    const hasSusPrev=r.susPrevTotal!=null; if(hasSusPrev) anySusPrev=true;
+    const susD=hasSusPrev?(r.susTotal-r.susPrevTotal):null;
+    susGrandTotal+=r.susTotal; if(hasSusPrev) susGrandDelta+=susD;
+    h+='<td><div class="famv">'+r.susTotal.toLocaleString()+'</div>'+famDeltaD(susD)+'</td>';
     h+='<td><div class="famv">'+rt.toLocaleString()+'</div>'+famDeltaD(hasPrev?rd:null)+'</td></tr>';
   }
   let gt=0, gd=0;
   h+='<tr class="fam-tot"><td>All locations</td>';
   for(const f of FAMILIES){ h+='<td><div class="famv">'+totals[f].toLocaleString()+'</div>'+famDeltaD(anyPrev?dtot[f]:null)+'</td>'; gt+=totals[f]; gd+=dtot[f]; }
+  h+='<td><div class="famv">'+susGrandTotal.toLocaleString()+'</div>'+famDeltaD(anySusPrev?susGrandDelta:null)+'</td>';
   h+='<td><div class="famv">'+gt.toLocaleString()+'</div>'+famDeltaD(anyPrev?gd:null)+'</td></tr></tbody></table>';
   document.getElementById('famTableWrap').innerHTML=h;
-  document.getElementById('famNote').textContent='Membership family '+state.metric+' counts'+(week?' as of '+prettyDate(week):'')+(state.cmp==='none'?' (no comparison)':' with Δ vs '+cmpLong())+' — each cell shows the count and change; “(Network)” excluded; ignores the membership-type filter above.';
+  document.getElementById('famNote').textContent='Membership family '+state.metric+' counts'+(week?' as of '+prettyDate(week):'')+(state.cmp==='none'?' (no comparison)':' with Δ vs '+cmpLong())+' — each cell shows the count and change; “(Network)” excluded; ignores the membership-type filter above. The Suspended column totals suspended memberships across these families regardless of the Metric selector above.';
 }
 const GRANITE_REG='Granite Club - Regular', GRANITE_SEC='Granite Club - Section';
 function graniteRows(){
@@ -534,15 +547,21 @@ function renderKPIs(rows){
   const nyo=rows.filter(r=>r.notYetOpen).length;
   const grew=open.filter(r=>r.prev!=null&&r.cur>r.prev).length;
   const shrank=open.filter(r=>r.prev!=null&&r.cur<r.prev).length;
+  const susOpen=rows.filter(r=>r.susCur!=null);
+  const totSus=susOpen.reduce((s,r)=>s+r.susCur,0);
+  const susHaveprev=susOpen.filter(r=>r.susPrev!=null);
+  const totSusPrev=susHaveprev.reduce((s,r)=>s+r.susPrev,0);
+  const sd=deltaCell(totSus,susHaveprev.length?totSusPrev:null);
   const K=document.getElementById('kpis'); K.innerHTML='';
   const cards=[
     {a:1,k:'Total '+state.metric,v:fmt(totCur),d:'<span class="'+d.cls+'">'+d.arrow+' '+d.abs+' ('+d.pct+')</span> '+(state.cmp==='none'?'(no comparison)':'vs '+cmpLong())},
     {k:'Locations in view',v:open.length,d:nyo+' not yet open'+(rows.some(r=>r.noData)?' · '+rows.filter(r=>r.noData).length+' no data':'')},
     {k:'Locations grew',v:grew,d:state.cmp==='none'?'(no comparison)':'vs '+cmpLong()},
-    {k:'Locations shrank',v:shrank,d:state.cmp==='none'?'(no comparison)':'vs '+cmpLong()}
+    {k:'Locations shrank',v:shrank,d:state.cmp==='none'?'(no comparison)':'vs '+cmpLong()},
+    {w:1,k:'Total Suspended',v:fmt(totSus),d:'<span class="'+sd.cls+'">'+sd.arrow+' '+sd.abs+' ('+sd.pct+')</span> '+(state.cmp==='none'?'(no comparison)':'vs '+cmpLong())}
   ];
   for(const c of cards){
-    const el=document.createElement('div'); el.className='kpi'+(c.a?' accent':'');
+    const el=document.createElement('div'); el.className='kpi'+(c.a?' accent':'')+(c.w?' warn':'');
     el.innerHTML='<div class="k">'+c.k+'</div><div class="v">'+c.v+'</div><div class="d">'+c.d+'</div>';
     K.appendChild(el);
   }
@@ -556,6 +575,7 @@ function renderTable(rows){
     if(k==='prev') return r.prev==null?-1:r.prev;
     if(k==='abs'||k==='trend') return (r.cur==null||r.prev==null)?-1e9:(r.cur-r.prev);
     if(k==='pct') return (r.cur==null||r.prev==null||r.prev===0)?-1e9:((r.cur-r.prev)/r.prev);
+    if(k==='sus') return r.susCur==null?-1:r.susCur;
     return 0;
   };
   rows.sort((a,b)=>{ const x=val(a,sk),y=val(b,sk); if(x<y)return -1*dir; if(x>y)return 1*dir; return a.loc.localeCompare(b.loc); });
@@ -564,21 +584,25 @@ function renderTable(rows){
     const nyoBadge=r.notYetOpen?' <span class="badge nyo">Not Yet Open</span>':'';
     if(r.noData){
       const msg=r.notYetOpen?'<span class="badge nyo">Not Yet Open</span> <span class="muted">no members yet</span>':'<span class="badge nohist">No data for this snapshot'+(r.hasHistory?'':' (no history yet)')+'</span>';
-      tr.innerHTML='<td><span class="caret"> </span>'+r.loc+'</td><td colspan="5" style="text-align:left">'+msg+'</td>';
+      tr.innerHTML='<td><span class="caret"> </span>'+r.loc+'</td><td colspan="6" style="text-align:left">'+msg+'</td>';
       body.appendChild(tr); continue;
     }
     const d=deltaCell(r.cur,r.prev); const exp=state.expanded.has(r.loc);
+    const sd=deltaCell(r.susCur,r.susPrev);
     tr.innerHTML='<td><span class="caret">'+(exp?'▾':'▸')+'</span>'+r.loc+nyoBadge+'</td>'+
       '<td>'+fmt(r.cur)+'</td><td class="muted">'+(r.prev==null?'—':fmt(r.prev))+'</td>'+
       '<td class="delta '+d.cls+'">'+d.abs+'</td><td class="delta '+d.cls+'">'+d.pct+'</td>'+
+      '<td>'+fmt(r.susCur)+(r.susPrev!=null?' <span class="delta '+sd.cls+'" style="font-size:11px">('+sd.abs+')</span>':'')+'</td>'+
       '<td class="'+d.cls+'"><span class="arrow">'+d.arrow+'</span></td>';
     tr.onclick=()=>{ exp?state.expanded.delete(r.loc):state.expanded.add(r.loc); renderTable(rowsForView()); };
     body.appendChild(tr);
     for(const c of r.cats){
       const cr=document.createElement('tr'); cr.className='cat-row'+(exp?' show':'');
       const cd=deltaCell(c.cur,c.prev);
+      const csd=deltaCell(c.susCur,c.susPrev);
       cr.innerHTML='<td>'+c.name+'</td><td>'+fmt(c.cur)+'</td><td class="muted">'+(c.prev==null?'—':fmt(c.prev))+'</td>'+
         '<td class="delta '+cd.cls+'">'+cd.abs+'</td><td class="delta '+cd.cls+'">'+cd.pct+'</td>'+
+        '<td>'+fmt(c.susCur)+(c.susPrev!=null?' <span class="delta '+csd.cls+'" style="font-size:11px">('+csd.abs+')</span>':'')+'</td>'+
         '<td class="'+cd.cls+'"><span class="arrow">'+cd.arrow+'</span></td>';
       body.appendChild(cr);
     }
