@@ -150,6 +150,14 @@ tr.cat-row.show{display:table-row}
         <option value="none">No comparison</option>
       </select>
     </div>
+    <div class="fgroup">
+      <label>New/Lost window</label>
+      <select id="churnSel">
+        <option value="7" selected>Last 7 days</option>
+        <option value="30">Last 30 days</option>
+        <option value="365">Last 365 days</option>
+      </select>
+    </div>
   </div>
 
   <div class="kpis" id="kpis"></div>
@@ -202,6 +210,8 @@ tr.cat-row.show{display:table-row}
           <th data-sort="prev" id="prevHead">Prior</th>
           <th data-sort="abs">&Delta;</th>
           <th data-sort="pct">&Delta; %</th>
+          <th data-sort="new" id="newHead">New</th>
+          <th data-sort="lost" id="lostHead">Lost</th>
           <th data-sort="sus">Suspended</th>
           <th data-sort="trend"></th>
         </tr></thead>
@@ -211,7 +221,8 @@ tr.cat-row.show{display:table-row}
     <div class="legend-note">
       <span class="arrow up">&#9650;</span> grew &nbsp; <span class="arrow down">&#9660;</span> shrank &nbsp;
       <span class="arrow flat">&mdash;</span> no change &nbsp; &middot; &nbsp; click a location row to expand its membership groups &middot;
-      click column headers to sort. &ldquo;New&rdquo; = group had no members in the prior snapshot.
+      click column headers to sort. In the &Delta; / &Delta;% columns, &ldquo;new&rdquo; means the group had no members in the prior snapshot.<br/>
+      <b>New</b> and <b>Lost</b> are gross counts pulled directly from CourtReserve&rsquo;s rolling &ldquo;new members&rdquo; / &ldquo;lost members&rdquo; counters for the window selected above (7 / 30 / 365 days as of this snapshot) &mdash; they show how many members actually joined or cancelled that membership type at that location, separate from &Delta;, which is just the net change in Active count (joins minus cancellations minus any suspensions/reactivations netted out).
     </div>
   </div>
 </div>
@@ -226,6 +237,7 @@ const state = {
   week: null,
   metric: 'Active',
   cmp: 'prev',
+  churn: '7',
   sort: {key:'cur', dir:-1},
   expanded: new Set()
 };
@@ -357,12 +369,13 @@ function prettyDate(iso){
 }
 function rowsForView(){
   const out=[];
+  const newKey='new_'+state.churn, lostKey='lost_'+state.churn;
   for(const loc of state.locs){
     const L=DATA.locations[loc]; const isNYO=!!L.notYetOpen;
     const snap=state.week?snapshotOnOrBefore(loc,state.week):null;
     if(!snap){ out.push({loc,notYetOpen:isNYO,noData:true,hasHistory:L.hasHistory}); continue; }
     const prevSnap=compareSnapshot(loc,snap);
-    let cur=0,prev=0,susCur=0,susPrev=0; const cats=[];
+    let cur=0,prev=0,susCur=0,susPrev=0,newCur=0,lostCur=0; const cats=[];
     const names=new Set([...Object.keys(snap.categories)]);
     if(prevSnap) for(const c in prevSnap.categories) names.add(c);
     for(const c of names){
@@ -372,12 +385,15 @@ function rowsForView(){
       if(snap.categories[c]===undefined && pv===0) continue;
       const scv=snap.categories[c]?snap.categories[c]['Suspended']||0:0;
       const spv=prevSnap&&prevSnap.categories[c]?prevSnap.categories[c]['Suspended']||0:0;
-      cats.push({name:c,cur:cv,prev:prevSnap?pv:null,susCur:scv,susPrev:prevSnap?spv:null});
+      const ncv=snap.categories[c]?snap.categories[c][newKey]||0:0;
+      const lcv=snap.categories[c]?snap.categories[c][lostKey]||0:0;
+      cats.push({name:c,cur:cv,prev:prevSnap?pv:null,susCur:scv,susPrev:prevSnap?spv:null,newCur:ncv,lostCur:lcv});
       cur+=cv; if(prevSnap) prev+=pv;
       susCur+=scv; if(prevSnap) susPrev+=spv;
+      newCur+=ncv; lostCur+=lcv;
     }
     cats.sort((a,b)=>b.cur-a.cur);
-    out.push({loc,notYetOpen:isNYO,cur,prev:prevSnap?prev:null,susCur,susPrev:prevSnap?susPrev:null,cats,hasHistory:true});
+    out.push({loc,notYetOpen:isNYO,cur,prev:prevSnap?prev:null,susCur,susPrev:prevSnap?susPrev:null,newCur,lostCur,cats,hasHistory:true});
   }
   return out;
 }
@@ -528,6 +544,8 @@ function render(){
   document.getElementById('metricName').textContent=state.metric;
   document.getElementById('curHead').textContent=state.metric;
   document.getElementById('prevHead').textContent=state.cmp==='prev'?'Prior wk':(state.cmp==='none'?'Prior':'Wk of '+prettyDate(state.cmp));
+  document.getElementById('newHead').textContent='New ('+state.churn+'d)';
+  document.getElementById('lostHead').textContent='Lost ('+state.churn+'d)';
   document.getElementById('latestDate').textContent=DATA.latest?prettyDate(DATA.latest):'—';
   document.getElementById('locCount').innerHTML=LOCS.length+' locations &middot; '+isOpenList().length+' open &middot; '+(LOCS.length-isOpenList().length)+' not yet open';
   if(DATA.unmapped && DATA.unmapped.length){
@@ -552,12 +570,16 @@ function renderKPIs(rows){
   const susHaveprev=susOpen.filter(r=>r.susPrev!=null);
   const totSusPrev=susHaveprev.reduce((s,r)=>s+r.susPrev,0);
   const sd=deltaCell(totSus,susHaveprev.length?totSusPrev:null);
+  const totNew=rows.reduce((s,r)=>s+(r.newCur||0),0);
+  const totLost=rows.reduce((s,r)=>s+(r.lostCur||0),0);
   const K=document.getElementById('kpis'); K.innerHTML='';
   const cards=[
     {a:1,k:'Total '+state.metric,v:fmt(totCur),d:'<span class="'+d.cls+'">'+d.arrow+' '+d.abs+' ('+d.pct+')</span> '+(state.cmp==='none'?'(no comparison)':'vs '+cmpLong())},
     {k:'Locations in view',v:open.length,d:nyo+' not yet open'+(rows.some(r=>r.noData)?' · '+rows.filter(r=>r.noData).length+' no data':'')},
     {k:'Locations grew',v:grew,d:state.cmp==='none'?'(no comparison)':'vs '+cmpLong()},
     {k:'Locations shrank',v:shrank,d:state.cmp==='none'?'(no comparison)':'vs '+cmpLong()},
+    {k:'New members ('+state.churn+'d)',v:'+'+fmt(totNew),d:'gross joins across all membership types, this window'},
+    {k:'Cancellations ('+state.churn+'d)',v:'&minus;'+fmt(totLost),d:'gross cancellations across all membership types, this window'},
     {w:1,k:'Total Suspended',v:fmt(totSus),d:'<span class="'+sd.cls+'">'+sd.arrow+' '+sd.abs+' ('+sd.pct+')</span> '+(state.cmp==='none'?'(no comparison)':'vs '+cmpLong())}
   ];
   for(const c of cards){
@@ -576,6 +598,8 @@ function renderTable(rows){
     if(k==='abs'||k==='trend') return (r.cur==null||r.prev==null)?-1e9:(r.cur-r.prev);
     if(k==='pct') return (r.cur==null||r.prev==null||r.prev===0)?-1e9:((r.cur-r.prev)/r.prev);
     if(k==='sus') return r.susCur==null?-1:r.susCur;
+    if(k==='new') return r.newCur==null?-1:r.newCur;
+    if(k==='lost') return r.lostCur==null?-1:r.lostCur;
     return 0;
   };
   rows.sort((a,b)=>{ const x=val(a,sk),y=val(b,sk); if(x<y)return -1*dir; if(x>y)return 1*dir; return a.loc.localeCompare(b.loc); });
@@ -592,6 +616,8 @@ function renderTable(rows){
     tr.innerHTML='<td><span class="caret">'+(exp?'▾':'▸')+'</span>'+r.loc+nyoBadge+'</td>'+
       '<td>'+fmt(r.cur)+'</td><td class="muted">'+(r.prev==null?'—':fmt(r.prev))+'</td>'+
       '<td class="delta '+d.cls+'">'+d.abs+'</td><td class="delta '+d.cls+'">'+d.pct+'</td>'+
+      '<td class="delta up">'+(r.newCur?('+'+fmt(r.newCur)):fmt(0))+'</td>'+
+      '<td class="delta down">'+(r.lostCur?('&minus;'+fmt(r.lostCur)):fmt(0))+'</td>'+
       '<td>'+fmt(r.susCur)+(r.susPrev!=null?' <span class="delta '+sd.cls+'" style="font-size:11px">('+sd.abs+')</span>':'')+'</td>'+
       '<td class="'+d.cls+'"><span class="arrow">'+d.arrow+'</span></td>';
     tr.onclick=()=>{ exp?state.expanded.delete(r.loc):state.expanded.add(r.loc); renderTable(rowsForView()); };
@@ -602,6 +628,8 @@ function renderTable(rows){
       const csd=deltaCell(c.susCur,c.susPrev);
       cr.innerHTML='<td>'+c.name+'</td><td>'+fmt(c.cur)+'</td><td class="muted">'+(c.prev==null?'—':fmt(c.prev))+'</td>'+
         '<td class="delta '+cd.cls+'">'+cd.abs+'</td><td class="delta '+cd.cls+'">'+cd.pct+'</td>'+
+        '<td class="delta up">'+(c.newCur?('+'+fmt(c.newCur)):fmt(0))+'</td>'+
+        '<td class="delta down">'+(c.lostCur?('&minus;'+fmt(c.lostCur)):fmt(0))+'</td>'+
         '<td>'+fmt(c.susCur)+(c.susPrev!=null?' <span class="delta '+csd.cls+'" style="font-size:11px">('+csd.abs+')</span>':'')+'</td>'+
         '<td class="'+cd.cls+'"><span class="arrow">'+cd.arrow+'</span></td>';
       body.appendChild(cr);
@@ -659,6 +687,7 @@ document.querySelectorAll('.dd-panel').forEach(p=>p.addEventListener('click',e=>
 document.getElementById('weekSel').onchange=e=>{state.week=e.target.value;render();};
 document.getElementById('metricSel').onchange=e=>{state.metric=e.target.value;render();};
 document.getElementById('cmpSel').onchange=e=>{state.cmp=e.target.value;render();};
+document.getElementById('churnSel').onchange=e=>{state.churn=e.target.value;render();};
 document.querySelectorAll('#mainTable th').forEach(th=>{
   th.onclick=()=>{ const k=th.dataset.sort; if(!k)return;
     if(state.sort.key===k) state.sort.dir*=-1; else state.sort={key:k,dir:-1}; renderTable(rowsForView()); };
